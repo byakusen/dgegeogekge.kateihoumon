@@ -383,12 +383,16 @@
       #print-schedule-title { display: block !important; margin: 0 0 15px 0 !important; text-align: center; font-size: 16pt; font-weight: bold; color: black; }
       .schedule-wrapper { overflow: visible !important; background: none !important; border: none !important; padding: 0 !important; }
       .schedule-wrapper table { width: 100% !important; min-width: 100% !important; table-layout: fixed !important; word-wrap: break-word !important; overflow-wrap: break-word !important; }
-      .schedule-wrapper th, .schedule-wrapper td { position: static !important; border: 1px solid #000 !important; padding: 4px !important; width: auto !important; min-width: 0 !important; max-width: none !important; font-size: 8pt !important; color: black !important; background: none !important; white-space: normal !important; word-break: break-word !important; }
+      .schedule-wrapper th, .schedule-wrapper td { position: static !important; border: 1px solid #000 !important; padding: 2px !important; width: auto !important; min-width: 0 !important; max-width: none !important; font-size: 8pt !important; color: black !important; background: none !important; white-space: normal !important; word-break: break-word !important; }
       .schedule-wrapper input[type="text"] { border: none !important; background: none !important; padding: 0 !important; font-size: 8pt !important; color: black !important; box-shadow: none !important; }
-      .schedule-wrapper .schedule-slot { border: none !important; background: none !important; padding: 0 !important; box-shadow: none !important; min-height: auto !important; }
+      .schedule-wrapper .schedule-slot { border: none !important; background: none !important; padding: 0 !important; box-shadow: none !important; min-height: 0 !important; height: auto !important; display: block !important; text-align: center !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; font-size: 8pt !important; line-height: 1.2 !important; }
       .schedule-wrapper input::placeholder { color: transparent !important; }
-      .schedule-wrapper .readonly-text { background: none !important; color: black !important; font-size: 8pt !important; padding: 0 !important; font-weight: normal !important; min-height: auto !important; }
+      .schedule-wrapper .readonly-text { background: none !important; color: black !important; font-size: 6pt !important; padding: 0 !important; font-weight: normal !important; min-height: 0 !important; display: block !important; white-space: pre !important; overflow: hidden !important; line-height: 1.3 !important; }
       .schedule-wrapper th { font-weight: bold !important; text-align: center !important; }
+      /* 印刷時：本文（時刻行）のマスの縦幅を一定にする（名前の有無・行数で高さが変わらないように） */
+      .schedule-wrapper tbody td { height: 13mm !important; vertical-align: middle !important; }
+      /* 印刷時：時刻列（各行の先頭マス）を横中央揃えに */
+      .schedule-wrapper tbody td:first-child { text-align: center !important; }
     }
   </style>
 </head>
@@ -760,6 +764,51 @@
         };
       }
       return conditionsData[cls][name];
+    }
+
+    /* -------------------------------------
+       特別支援学級・通級学級のメンバー解決
+       - 特支/通級クラスには専用の名簿が無く、実体は原学級（○年○組）名簿の
+         「特支」「通級」チェックとして入っている。
+       - ここで原学級を横断して所属児童を集め、日程表で配置できるようにする。
+    -------------------------------------- */
+    function isSpecialOrResourceClass(cls) {
+      return cls.startsWith("特別支援学級") || cls === "通級学級";
+    }
+
+    /* 特支/通級クラス cls に所属する児童を原学級から集める。
+       戻り値: [{ name, originClass }]（原学級のクラス順・名簿順、同名は最初の1件のみ） */
+    function getSpecialClassMembers(cls) {
+      const isSpecialClass = cls.startsWith("特別支援学級");
+      const isResourceClass = (cls === "通級学級");
+      if (!isSpecialClass && !isResourceClass) return [];
+      const members = [];
+      const seen = new Set();
+      classNames.forEach(oc => {
+        if (!/^\d+年\d+組$/.test(oc)) return;   // 原学級（通常学級）のみを対象
+        if (!settingsData[oc]) return;
+        settingsData[oc].forEach(s => {
+          const nm = (s.name || '').trim();
+          if (!nm) return;
+          const hit = isSpecialClass ? s.isSpecial : s.isResource;
+          if (!hit) return;
+          if (seen.has(nm)) return;
+          seen.add(nm);
+          members.push({ name: nm, originClass: oc });
+        });
+      });
+      return members;
+    }
+
+    /* 児童 name の「条件」を引くべきクラスを返す。
+       - 特支/通級クラス表示中は、その子の原学級を返す（原学級の条件を利用するため）。
+       - 通常クラス表示中や原学級が見つからない場合は cls をそのまま返す。 */
+    function getConditionClassFor(cls, name) {
+      if (isSpecialOrResourceClass(cls)) {
+        const member = getSpecialClassMembers(cls).find(m => m.name === name);
+        if (member) return member.originClass;
+      }
+      return cls;
     }
 
     /* -------------------------------------
@@ -1969,7 +2018,7 @@
           let isMovingSource = false;
           if (selectedPlacement) {
             if (selectedPlacement.originD === d && selectedPlacement.originTIdx === tIdx) isMovingSource = true;
-            const cond = getCondition(currentClass, selectedPlacement.name);
+            const cond = getCondition(getConditionClassFor(currentClass, selectedPlacement.name), selectedPlacement.name);
             const dCond = cond.daily[d];
             if (!dCond.active) isConditionMatch = false;
             const timeStr = timeSlots[tIdx];
@@ -2154,7 +2203,10 @@
     function updateUnenteredStudentsDisplay() {
       const currentClass = document.getElementById('schedule-class-select').value;
       if (!currentClass || !settingsData[currentClass]) return;
-      const currentClassStudents = settingsData[currentClass].filter(s => s.name.trim() !== '').map(s => s.name.trim());
+      const isSpecialView = isSpecialOrResourceClass(currentClass);
+      const currentClassStudents = isSpecialView
+        ? getSpecialClassMembers(currentClass).map(m => m.name)
+        : settingsData[currentClass].filter(s => s.name.trim() !== '').map(s => s.name.trim());
       const scheduledStudents = [];
       if (scheduleData[currentClass]) {
         for(let d = 0; d < 5; d++){
@@ -2168,9 +2220,10 @@
       const unenteredStudents = currentClassStudents.filter(name => !allEnteredStudents.includes(name));
       const groupedStudents = { 1: [], 2: [], 3: [], 4: [], 5: [] };
       unenteredStudents.forEach(name => {
-        const cond = getCondition(currentClass, name);
+        const cond = getCondition(getConditionClassFor(currentClass, name), name);
         let activeCount = 0;
         for (let i = 0; i < 5; i++) { if (cond.daily[i].active) activeCount++; }
+        if (isSpecialView && activeCount === 0) return; // 原学級で全日「希望しない」の子は特支/通級でも出さない
         if (activeCount >= 1 && activeCount <= 5) groupedStudents[activeCount].push(name);
         else groupedStudents[5].push(name);
       });
@@ -2206,6 +2259,12 @@
       datalist.innerHTML = '';
       const currentClass = document.getElementById('schedule-class-select').value;
       if (!currentClass || !settingsData[currentClass]) return;
+      if (isSpecialOrResourceClass(currentClass)) {
+        getSpecialClassMembers(currentClass).forEach(m => {
+          const option = document.createElement('option'); option.value = m.name; datalist.appendChild(option);
+        });
+        return;
+      }
       settingsData[currentClass].forEach(s => {
         if (s.name.trim() !== '') { const option = document.createElement('option'); option.value = s.name.trim(); datalist.appendChild(option); }
       });
